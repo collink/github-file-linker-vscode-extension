@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import simpleGit, { RemoteWithRefs, SimpleGit } from 'simple-git';
 import * as path from 'path';
-import { get } from 'http';
 
 const editor = vscode.window.activeTextEditor;
 
