@@ -18,13 +18,13 @@ const getErrorMessage = (errorType: ErrorType) => {
         case ErrorType.NoFileOpen:
         case ErrorType.FileNotInRepository:
         case ErrorType.FileNotInGitHubRepository:
-            return 'Open a file in a GitHub repository';
+            return 'This file must be in a GitHub repository and have been pushed upstream';
 
         case ErrorType.FileNotInSelectedBranch:
-            return 'The file does not exist in the selected branch';
+            return 'This file does not exist in the branch you selected';
 
         case ErrorType.BranchDoesntExistRemotely:
-            return 'The selected branch does not exist on the remote repository';
+            return 'The branch you selected does not exist in remote repository';
 
         default:
             return null;
@@ -41,9 +41,7 @@ const showError = (errorType: ErrorType) => {
     vscode.window.showErrorMessage(errorMessage);
 };
 
-const getRepoRootPath = async (filePath: string) => {
-    const fileParentDirectory = path.dirname(filePath);
-
+const getRepoRootPath = async (fileParentDirectory: string) => {
     const repoRoot = await simpleGit(fileParentDirectory).revparse(['--show-toplevel']);
 
     return repoRoot;
@@ -63,7 +61,7 @@ const getGitHubRemote = async (git: SimpleGit) => {
         const remoteChoices = githubRemotes.map((remote) => `${remote.name} (${remote.refs.push})`);
 
         const remoteName = await vscode.window.showQuickPick(remoteChoices, {
-            placeHolder: 'Select the remote to use for the GitHub URL',
+            title: 'Select the remote to use for the GitHub URL',
         });
 
         if (!remoteName) {
@@ -205,7 +203,7 @@ export const activate = (context: vscode.ExtensionContext) => {
         const remoteBranchNames = await getRemoteBranchNames(git, remote);
         const branchNames = await getBranchNames(git, remoteBranchNames);
 
-        const selectedBranch = await vscode.window.showQuickPick(branchNames);
+        const selectedBranch = await vscode.window.showQuickPick(branchNames, { title: 'Select the branch to link to' });
 
         if (!selectedBranch) {
             return;
