@@ -6,9 +6,11 @@ import { get } from 'http';
 const editor = vscode.window.activeTextEditor;
 
 enum ErrorType {
-    NoFileOpen,
-    FileNotInRepository,
+    BranchDoesntExistRemotely,
     FileNotInGitHubRepository,
+    FileNotInRepository,
+    FileNotInSelectedBranch,
+    NoFileOpen,
 }
 
 const getErrorMessage = (errorType: ErrorType) => {
@@ -17,6 +19,15 @@ const getErrorMessage = (errorType: ErrorType) => {
         case ErrorType.FileNotInRepository:
         case ErrorType.FileNotInGitHubRepository:
             return 'Open a file in a GitHub repository';
+
+        case ErrorType.FileNotInSelectedBranch:
+            return 'The file does not exist in the selected branch';
+
+        case ErrorType.BranchDoesntExistRemotely:
+            return 'The selected branch does not exist on the remote repository';
+
+        default:
+            return null;
     }
 };
 
@@ -49,10 +60,20 @@ const getGitHubRemote = async (git: SimpleGit) => {
 
     let remote = githubRemotes.find((remote) => remote.name === 'origin');
     if (!remote) {
-        remote = githubRemotes[0];
+        const remoteChoices = githubRemotes.map((remote) => `${remote.name} (${remote.refs.push})`);
+
+        const remoteName = await vscode.window.showQuickPick(remoteChoices, {
+            placeHolder: 'Select the remote to use for the GitHub URL',
+        });
+
+        if (!remoteName) {
+            return null;
+        }
+
+        remote = githubRemotes.find((remote) => remote.name === remoteName);
     }
 
-    return remote;
+    return remote || null;
 };
 
 const getGithubBaseUrl = (remote: RemoteWithRefs) => {
@@ -67,11 +88,23 @@ const getFilePathRelativeToRepoRoot = (filePath: string, repoRoot: string) => {
     return filePathRelativeToRepo;
 };
 
-const getBranches = async (git: SimpleGit) => {
+const getRemoteBranchNames = async (git: SimpleGit, remote: RemoteWithRefs) => {
+    const remoteName = remote.name;
+    const remoteBranches = (await git.branch(['-r'])).all?.map((branch) => branch.replace(`${remoteName}/`, '')) || [];
+
+    return remoteBranches;
+};
+
+const getBranchNames = async (git: SimpleGit, remoteBranchNames: string[]) => {
     const defaultBranchNames = ['master', 'main'];
 
     const currentBranchName = (await git.branchLocal()).current;
-    const branches = (await git.branch()).all || [];
+
+    const branches = [...remoteBranchNames];
+
+    if (!branches.includes(currentBranchName)) {
+        branches.unshift(currentBranchName);
+    }
 
     branches.sort((a, b) => {
         const aIsDefaultBranch = defaultBranchNames.includes(a);
@@ -97,6 +130,18 @@ const getBranches = async (git: SimpleGit) => {
     });
 
     return branches;
+};
+
+const branchExistsRemotely = async (selectedBranchName: string, remoteBranchNames: string[]) =>
+    remoteBranchNames.includes(selectedBranchName);
+
+const fileExistsInBranch = async (git: SimpleGit, filePath: string, branch: string) => {
+    try {
+        await git.catFile(['-e', `${branch}:${filePath}`]);
+        return true;
+    } catch (error) {
+        return false;
+    }
 };
 
 const buildUrl = (baseUrl: string, branch: string, filePath: string, selection: vscode.Selection) => {
@@ -141,10 +186,14 @@ export const activate = (context: vscode.ExtensionContext) => {
 
         const git = simpleGit(repoRoot);
 
-        let remote: RemoteWithRefs;
+        let remote: RemoteWithRefs | null;
 
         try {
             remote = await getGitHubRemote(git);
+
+            if (!remote) {
+                return;
+            }
         } catch (error) {
             showError(ErrorType.FileNotInGitHubRepository);
             return;
@@ -153,11 +202,22 @@ export const activate = (context: vscode.ExtensionContext) => {
         const relativeFilePath = getFilePathRelativeToRepoRoot(filePath, repoRoot);
         const ghBaseUrl = getGithubBaseUrl(remote);
 
-        const branches = await getBranches(git);
+        const remoteBranchNames = await getRemoteBranchNames(git, remote);
+        const branchNames = await getBranchNames(git, remoteBranchNames);
 
-        const selectedBranch = await vscode.window.showQuickPick(branches);
+        const selectedBranch = await vscode.window.showQuickPick(branchNames);
 
         if (!selectedBranch) {
+            return;
+        }
+
+        if (!(await fileExistsInBranch(git, relativeFilePath, selectedBranch))) {
+            showError(ErrorType.FileNotInSelectedBranch);
+            return;
+        }
+
+        if (!(await branchExistsRemotely(selectedBranch, remoteBranchNames))) {
+            showError(ErrorType.BranchDoesntExistRemotely);
             return;
         }
 
@@ -165,13 +225,8 @@ export const activate = (context: vscode.ExtensionContext) => {
 
         const url = buildUrl(ghBaseUrl, selectedBranch, relativeFilePath, selection);
 
-        try {
-            await copyUrlToClipboard(url);
-
-            vscode.window.showInformationMessage('Copied GitHub URL for current file to clipboard');
-        } catch (error) {
-            vscode.window.showErrorMessage('Failed to copy GitHub URL for current file to clipboard');
-        }
+        await copyUrlToClipboard(url);
+        vscode.window.showInformationMessage('Copied GitHub URL for current file to clipboard');
     });
 
     context.subscriptions.push(disposable);
